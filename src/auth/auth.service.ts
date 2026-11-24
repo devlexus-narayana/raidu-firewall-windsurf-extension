@@ -13,7 +13,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as vscode from 'vscode';
 import * as settings from '../config/settings';
-import { revokeOnServer } from './revoke';
+import { revokeOnServer, revokeTokenSession } from './revoke';
 
 // ---------------------------------------------------------------------------
 // State (persisted in globalState to survive extension host restart)
@@ -131,6 +131,11 @@ export async function handleCallback(uri: vscode.Uri): Promise<void> {
     vscode.window.showErrorMessage('Raidu: Authentication failed (no token).');
     return;
   }
+
+  // A new login replaces the old token: revoke its session so it does not stay
+  // live on Tower (and counted as connected) after this editor stops using it.
+  const previous = await settings.getToken();
+  if (previous && previous !== token) await revokeTokenSession(settings.getApiBase(), previous);
 
   console.log('[Raidu] Saving token...');
   await settings.setToken(token);

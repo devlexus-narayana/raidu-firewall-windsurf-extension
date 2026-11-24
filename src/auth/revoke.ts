@@ -1,12 +1,12 @@
 /**
  * Revoking this editor's pairing on Tower when the user disconnects.
  *
- * Which sessions: this editor's own (the `sessionId` claim in its token), and
- * any pairing for the same tool that has never been used: a login that minted
- * a token the editor never received (a second window, a console "connect with
- * a link" that did not complete). Left alone, those keep the user counted as
- * connected in Tower's Tool connections view. Pairings for other tools, and
- * same-tool pairings in use elsewhere (another machine), stay connected.
+ * Which sessions: every pairing the user has for this tool. "Disconnect Cursor"
+ * means Cursor is disconnected: an earlier version spared same-tool pairings
+ * that had been used, assuming another machine, but in testing the survivor
+ * was this editor's own previous login (a re-login replaced the token locally
+ * and never revoked the old one), and it kept the user counted as connected in
+ * Tower's Tool connections view. Pairings for other tools stay connected.
  *
  * Order: the own session is revoked LAST. Revoking it first invalidates the
  * token every later revoke call authenticates with, which is how an earlier
@@ -33,14 +33,11 @@ export function sessionIdFromToken(token: string): string | null {
 
 /** The sessions to revoke, in the order to revoke them (own session last). Pure, for testing. */
 export function sessionsToRevoke(sessions: ServerSession[], ownId: string | null, tool: string): string[] {
-  const others = sessions.filter((s) => s.id !== ownId && s.tool === tool && !s.lastUsedAt).map((s) => s.id);
+  const others = sessions.filter((s) => s.id !== ownId && s.tool === tool).map((s) => s.id);
   if (ownId) return sessions.some((s) => s.id === ownId) ? [...others, ownId] : others;
-  // Own session unknown (token without the claim): every pairing for this tool,
-  // oldest first, since the list comes newest first and ours is the newest.
-  return sessions
-    .filter((s) => s.tool === tool)
-    .map((s) => s.id)
-    .reverse();
+  // Own session unknown (token without the claim): oldest first, since the
+  // list comes newest first and ours is most likely the newest.
+  return others.reverse();
 }
 
 /** Best effort: never throws, never blocks the local disconnect. */
@@ -58,5 +55,23 @@ export async function revokeOnServer(apiBase: string, token: string, tool: strin
     }
   } catch {
     // Best effort: the local token is cleared either way.
+  }
+}
+
+/**
+ * Revoke only the session a token belongs to. Called with the PREVIOUS token
+ * when a new login replaces it, so re-connecting does not leave the old
+ * pairing live on Tower. Best effort, never throws.
+ */
+export async function revokeTokenSession(apiBase: string, token: string): Promise<void> {
+  const id = sessionIdFromToken(token);
+  if (!id) return;
+  try {
+    await fetch(`${apiBase}/api/auth/ide/revoke?session_id=${encodeURIComponent(id)}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    // Best effort.
   }
 }
