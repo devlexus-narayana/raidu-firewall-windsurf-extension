@@ -3,7 +3,8 @@
  * Scan shell commands, block exfiltration, detect PII in output.
  */
 
-import { scanText, scanTextLocal, formatEntities, entitySummary, isExfiltrationCommand, findSensitiveAccess, loadPolicy, createLogger, reportBlock, reportScanBlockIfUnrecorded, WINDSURF_EVENT } from '../lib';
+import { scanText, scanTextLocal, formatEntities, entitySummary, isExfiltrationCommand, findSensitiveAccess, loadPolicy, createLogger, reportBlock, reportScanBlockIfUnrecorded, findBlockedValues, rememberBlockedValues, inspectFile, WINDSURF_EVENT } from '../lib';
+import type { FileToInspect } from '../lib';
 import type { WindsurfHookEvent } from '../types';
 
 const logger = createLogger();
@@ -15,8 +16,18 @@ export function handlePreRunCommand(event: WindsurfHookEvent): { block: boolean;
 
   logger.incStat('totalScans');
 
+  // A value blocked earlier must not be run by the agent (RAI-4807 #7).
+  const reused = findBlockedValues(command);
+  if (reused.length > 0) {
+    logger.incStat('commandsBlocked');
+    logger.audit({ event: 'pre_run_command', action: 'blocked', reason: 'previously_blocked_value', entities: reused.map((type) => ({ type, score: 1 })), trajectoryId: event.trajectory_id });
+    reportBlock(event, { event: WINDSURF_EVENT.pre_run_command, kind: 'sensitive_data', detector: 'local', tool: 'Shell', entityTypes: reused, rule: 'previously_blocked_value' });
+    return { block: true, message: `Raidu Firewall: Blocked command. It uses a value Raidu Firewall blocked earlier (${reused.join(', ')}).` };
+  }
+
   // Check if command references sensitive files
-  const hit = findSensitiveAccess({ command }, policy);
+  const toInspect: FileToInspect[] = [];
+  const hit = findSensitiveAccess({ command }, policy, toInspect);
   if (hit) {
     logger.incStat('commandsBlocked');
     logger.audit({ event: 'pre_run_command', action: 'blocked', command: command.slice(0, 500), reason: hit.message, trajectoryId: event.trajectory_id });
@@ -31,12 +42,24 @@ export function handlePreRunCommand(event: WindsurfHookEvent): { block: boolean;
     return { block: true, message: `Raidu Firewall: ${hit.message}` };
   }
 
+  // Files whose name only suggests sensitivity: their content decides (RAI-4807 #9).
+  for (const f of toInspect.slice(0, 5)) {
+    const r = inspectFile(f.filePath, f.rule, undefined, event.tool_info?.cwd);
+    if (r.block) {
+      logger.incStat('commandsBlocked');
+      logger.audit({ event: 'pre_run_command', action: 'blocked', command: command.slice(0, 500), reason: `content (${f.rule})`, entities: entitySummary(r.scan.entities), trajectoryId: event.trajectory_id });
+      reportScanBlockIfUnrecorded(event, r.scan, { event: WINDSURF_EVENT.pre_run_command, tool: 'Shell' });
+      return { block: true, message: `Raidu Firewall: Blocked access to ${r.fileName}: it contains ${formatEntities(r.scan.entities)}.` };
+    }
+  }
+
   // Scan for secrets in command
   const scan = scanText(command, undefined, logger.debug);
   const { entities } = scan;
   if (entities.length > 0) {
     logger.incStat('piiFound', entities.length);
     logger.incStat('commandsBlocked');
+    rememberBlockedValues(entities);
     logger.audit({ event: 'pre_run_command', action: 'blocked', command: command.slice(0, 500), entities: entitySummary(entities), trajectoryId: event.trajectory_id });
     reportScanBlockIfUnrecorded(event, scan, { event: WINDSURF_EVENT.pre_run_command, tool: 'Shell' });
     return { block: true, message: `Raidu Firewall: Blocked command. Contains ${formatEntities(entities)}.` };

@@ -1,8 +1,14 @@
 export { PIIScanner } from './scanner';
-export { DEFAULT_POLICY, loadPolicy, isSensitiveFile, checkInputForSensitiveFiles, findSensitiveAccess, isExfiltrationCommand, globToRegex, EXFIL_PATTERNS } from './policy';
+export { DEFAULT_POLICY, loadPolicy, isSensitiveFile, classifySensitiveFile, isKeywordPattern, matchesFilePattern, checkInputForSensitiveFiles, findSensitiveAccess, isExfiltrationCommand, globToRegex, EXFIL_PATTERNS } from './policy';
+export type { FileToInspect, SensitiveFileMatch } from './policy';
 export { validateViaAPI, getToken } from './api';
 export type { APIClientConfig } from './api';
-export { scanText, scanTextLocal, formatEntities, redactText, copyToClipboard, entitySummary, MAX_SCAN_SIZE } from './redaction';
+export { scanText, scanTextLocal, scanTextWithFiles, scanFileContent, formatEntities, redactText, copyToClipboard, entitySummary, MAX_SCAN_SIZE } from './redaction';
+export type { FileScanResult, ScanFile } from './redaction';
+export { findBlockedValues, rememberBlockedValues, rememberSecretsIn } from './blocked-values';
+export { inspectFile } from './inspect';
+export { readTextForScan } from './content';
+export { scanResponseInBackground } from './response-scan';
 export { createLogger } from './audit';
 export { reportBlock, reportScanBlockIfUnrecorded, WINDSURF_EVENT } from './report';
 export type { Logger } from './audit';

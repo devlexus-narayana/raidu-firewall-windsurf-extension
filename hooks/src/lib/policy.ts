@@ -27,6 +27,10 @@ export const DEFAULT_POLICY: Policy = {
   },
 };
 
+/**
+ * Unanchored glob, for testing a pattern against free text (a search glob).
+ * File names are matched with matchesFilePattern() instead.
+ */
 export function globToRegex(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
   return new RegExp(escaped, 'i');
@@ -65,16 +69,86 @@ export function loadPolicy(policyCachePath?: string, projectDir?: string): Polic
   return policy;
 }
 
-/** Check if a file path matches blocked patterns. Returns the matched pattern or null. */
-export function isSensitiveFile(filePath: string, policy: Policy): string | null {
-  const name = path.basename(filePath);
+/** Anchored glob: `*` matches within one path segment. */
+function anchoredGlob(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*');
+  return new RegExp(`^${escaped}$`, 'i');
+}
+
+function toPosix(p: string): string {
+  return p.replace(/\\/g, '/');
+}
+
+/**
+ * Does a policy pattern match this file?
+ *
+ * Patterns without a slash match the file NAME exactly (`.env` matches `.env`,
+ * not `.environment.ts`; `*.key` matches `server.key`, not `keyboard.key.ts`
+ * nor `foo.keyboard`). Patterns with a slash match the trailing path segments
+ * (`.aws/*` matches `/home/me/.aws/config`). The old matcher was an unanchored
+ * substring test, which blocked any file whose path merely CONTAINED a pattern.
+ */
+export function matchesFilePattern(pattern: string, filePath: string): boolean {
+  const p = toPosix(pattern.trim()).replace(/\/+$/, '');
+  if (!p) return false;
+  const full = toPosix(filePath);
+  const segments = full.split('/').filter(Boolean);
+  if (!p.includes('/')) {
+    // A bare directory name in .cursorignore ("secrets") protects everything below it.
+    return segments.some((seg, i) => anchoredGlob(p).test(seg) && (i === segments.length - 1 || !p.includes('*')));
+  }
+  const patSegs = p.replace(/^\/+/, '').split('/').filter(Boolean);
+  for (let start = 0; start + patSegs.length <= segments.length; start++) {
+    if (patSegs.every((ps, k) => anchoredGlob(ps).test(segments[start + k]))) return true;
+  }
+  return false;
+}
+
+/**
+ * A keyword pattern names a TOPIC, not a file type: `secrets*`, `*private*`,
+ * `credentials*`. It has a wildcard and no extension or path. A file matching
+ * only a keyword pattern is not blocked by name (RAI-4807 #9): its content is
+ * scanned and decides. Patterns for formats that are sensitive by nature
+ * (`.env`, `*.pem`, `id_rsa`, `.ssh/*`) still block on the name.
+ */
+export function isKeywordPattern(pattern: string): boolean {
+  const p = pattern.trim();
+  return p.includes('*') && !p.includes('.') && !p.includes('/');
+}
+
+export interface SensitiveFileMatch {
+  /** The policy pattern that matched. */
+  rule: string;
+  /** 'block' = sensitive by name; 'inspect' = name only suggests it, scan the content. */
+  mode: 'block' | 'inspect';
+}
+
+export function classifySensitiveFile(filePath: string, policy: Policy): SensitiveFileMatch | null {
+  if (!filePath) return null;
   for (const p of policy.files.allowed || []) {
-    if (globToRegex(p).test(name) || globToRegex(p).test(filePath)) return null;
+    if (matchesFilePattern(p, filePath)) return null;
   }
+  let keywordHit: string | null = null;
   for (const p of policy.files.blocked) {
-    if (globToRegex(p).test(name) || globToRegex(p).test(filePath)) return p;
+    if (!matchesFilePattern(p, filePath)) continue;
+    if (!isKeywordPattern(p)) return { rule: p, mode: 'block' };
+    keywordHit ??= p;
   }
-  return null;
+  return keywordHit ? { rule: keywordHit, mode: 'inspect' } : null;
+}
+
+/** The matching pattern when a file is protected by NAME alone; null otherwise. */
+export function isSensitiveFile(filePath: string, policy: Policy): string | null {
+  const hit = classifySensitiveFile(filePath, policy);
+  return hit?.mode === 'block' ? hit.rule : null;
+}
+
+/** Path-like tokens in a shell command (`cat ~/.aws/credentials | ...`). */
+export function commandPathTokens(command: string): string[] {
+  return command
+    .split(/[\s|&;<>()$`'"=]+/)
+    .map((t) => t.replace(/^~(?=\/)/, ''))
+    .filter((t) => t && !t.startsWith('-'));
 }
 
 export interface SensitiveAccess {
@@ -87,29 +161,48 @@ export interface SensitiveAccess {
   fileName?: string;
 }
 
+/**
+ * A file the input would touch whose name only suggests sensitivity. The
+ * caller decides by scanning its content (RAI-4807 #9).
+ */
+export interface FileToInspect {
+  filePath: string;
+  rule: string;
+}
+
 /** Check tool input (file_path, glob, command) against policy, with structured details. */
-export function findSensitiveAccess(input: Record<string, unknown>, policy: Policy): SensitiveAccess | null {
+export function findSensitiveAccess(
+  input: Record<string, unknown>,
+  policy: Policy,
+  inspect?: FileToInspect[],
+): SensitiveAccess | null {
   if (input.file_path) {
-    const hit = isSensitiveFile(input.file_path as string, policy);
-    if (hit) {
-      const fileName = path.basename(input.file_path as string);
-      return { message: `Blocked access to ${fileName} (policy: ${hit})`, kind: 'sensitive_file', rule: hit, fileName };
+    const filePath = input.file_path as string;
+    const hit = classifySensitiveFile(filePath, policy);
+    if (hit?.mode === 'block') {
+      const fileName = path.basename(filePath);
+      return { message: `Blocked access to ${fileName} (policy: ${hit.rule})`, kind: 'sensitive_file', rule: hit.rule, fileName };
     }
+    if (hit) inspect?.push({ filePath, rule: hit.rule });
   }
   if (input.glob) {
+    // Listing names is not reading content, so keyword patterns do not apply.
     for (const p of policy.files.blocked) {
+      if (isKeywordPattern(p)) continue;
       if (globToRegex(p).test(input.glob as string))
         return { message: `Blocked search for sensitive files (${input.glob})`, kind: 'sensitive_file', rule: p };
     }
   }
   if (input.command) {
-    for (const p of policy.files.blocked) {
-      if (globToRegex(p).test(input.command as string))
-        return { message: `Blocked shell access to ${p}`, kind: 'sensitive_file', rule: p };
+    const command = input.command as string;
+    for (const token of commandPathTokens(command)) {
+      const hit = classifySensitiveFile(token, policy);
+      if (hit?.mode === 'block') return { message: `Blocked shell access to ${hit.rule}`, kind: 'sensitive_file', rule: hit.rule };
+      if (hit) inspect?.push({ filePath: token, rule: hit.rule });
     }
     for (const p of policy.commands.blocked) {
       try {
-        if (new RegExp(p, 'i').test(input.command as string))
+        if (new RegExp(p, 'i').test(command))
           return { message: `Blocked command (policy: ${p})`, kind: 'command_policy', rule: p };
       } catch {}
     }

@@ -13,6 +13,7 @@ import { handlePreRunCommand, handlePostRunCommand } from './handlers/command';
 import { handlePreMCPToolUse, handlePostMCPToolUse } from './handlers/mcp';
 import { handlePostCascadeResponse } from './handlers/response';
 import { FLUSH_FLAG, flushReports, flushReportsInBackground } from './lib/report';
+import { runResponseScanFromStdin, SCAN_RESPONSE_FLAG } from './lib/response-scan';
 
 const MAX_STDIN = 1_048_576;
 const logger = createLogger();
@@ -83,6 +84,9 @@ if (process.argv.includes(FLUSH_FLAG)) {
   } catch (err: unknown) {
     logger.debug(`ERR flush: ${(err as Error).message?.slice(0, 100)}`);
   }
+} else if (process.argv.includes(SCAN_RESPONSE_FLAG)) {
+  // Detached response scanner started by scanResponseInBackground().
+  runResponseScanFromStdin().catch((err: unknown) => logger.debug(`ERR response-scan: ${(err as Error).message?.slice(0, 100)}`));
 } else {
   main();
 }
