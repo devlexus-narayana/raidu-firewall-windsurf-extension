@@ -169,3 +169,57 @@ export function rememberSecretsIn(text: string): void {
     rememberBlockedValues(values);
   } catch {}
 }
+
+// ---------------------------------------------------------------------------
+// Conversations that still hold a blocked prompt
+// ---------------------------------------------------------------------------
+
+/**
+ * Blocking a prompt does not take it out of the conversation. The editor keeps
+ * the blocked message in the chat and sends it as history with the NEXT
+ * prompt, so "give me our conversation context" got the blocked SSN, email and
+ * phone back from the model without the user typing them again. A hook cannot
+ * edit that history, so once a prompt is blocked, every later prompt in the
+ * same conversation is blocked until the user starts a new chat.
+ */
+const TAINT_FILE = path.join(LOG_DIR, 'blocked-conversations.json');
+const MAX_TAINTED = 500;
+
+interface TaintedConversation {
+  /** Unix ms when the first prompt was blocked. */
+  at: number;
+  /** Entity types that were blocked, for the message and the Tower report. */
+  types: string[];
+}
+
+function loadTaint(): Record<string, TaintedConversation> {
+  try {
+    const all = JSON.parse(fs.readFileSync(TAINT_FILE, 'utf-8')) as Record<string, TaintedConversation>;
+    const cutoff = Date.now() - BLOCKED_VALUE_TTL_MS;
+    return Object.fromEntries(Object.entries(all).filter(([, v]) => v && v.at > cutoff));
+  } catch {
+    return {};
+  }
+}
+
+/** Record that a prompt in this conversation was blocked. Never throws. */
+export function markConversationBlocked(conversationId: string | undefined, types: string[]): void {
+  if (!conversationId) return;
+  try {
+    const all = loadTaint();
+    const prev = all[conversationId];
+    all[conversationId] = { at: prev?.at ?? Date.now(), types: [...new Set([...(prev?.types ?? []), ...types])].slice(0, 20) };
+    const kept = Object.entries(all)
+      .sort((a, b) => a[1].at - b[1].at)
+      .slice(-MAX_TAINTED);
+    fs.writeFileSync(TAINT_FILE, JSON.stringify(Object.fromEntries(kept)), { mode: 0o600 });
+  } catch (err) {
+    debug(`blocked-values: taint write failed: ${(err as Error).message?.slice(0, 100)}`);
+  }
+}
+
+/** The blocked entity types if this conversation still holds a blocked prompt. */
+export function blockedConversation(conversationId: string | undefined): string[] | null {
+  if (!conversationId) return null;
+  return loadTaint()[conversationId]?.types ?? null;
+}
