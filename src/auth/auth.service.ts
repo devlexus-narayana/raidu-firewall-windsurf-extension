@@ -13,6 +13,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as vscode from 'vscode';
 import * as settings from '../config/settings';
+import { revokeOnServer } from './revoke';
 
 // ---------------------------------------------------------------------------
 // State (persisted in globalState to survive extension host restart)
@@ -218,6 +219,10 @@ export async function loadConfig(token: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export async function logout(): Promise<void> {
+  // Revoke on Tower too: clearing the local token alone left the pairing live
+  // there, still counted as connected in Tower's Tool connections view.
+  const token = await settings.getToken();
+  if (token) await revokeOnServer(settings.getApiBase(), token, 'windsurf');
   await settings.clearAll();
   _profile = undefined;
   vscode.window.showInformationMessage('Raidu Firewall: Disconnected.');
