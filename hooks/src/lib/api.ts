@@ -12,7 +12,12 @@ import type { APIValidationResult, BlockReport, EvidenceVerdict } from './types'
 const MAX_API_INPUT = 100_000;
 /** Tower's IdeValidateResponseDto cap. */
 const MAX_RESPONSE_INPUT = 200_000;
-const DEFAULT_TOKEN_PATH = path.join(os.homedir(), '.raidu', 'token');
+// This editor's own token (src/config/token-store.ts writes the same path).
+// RAI-4807: one file per editor; the old shared ~/.raidu/token let Cursor's
+// hooks send Windsurf's token, and the other way round.
+const TOOL = 'windsurf';
+const DEFAULT_TOKEN_PATH = path.join(os.homedir(), '.raidu', TOOL, 'token');
+const LEGACY_TOKEN_PATH = path.join(os.homedir(), '.raidu', 'token');
 const DEFAULT_API_BASE = 'https://sandbox.raidu.com';
 
 export function resolveApiBase(config?: APIClientConfig): string {
@@ -24,12 +29,32 @@ export interface APIClientConfig {
   tokenFilePath?: string;
 }
 
-export function getToken(tokenFilePath?: string): string | null {
+function readToken(file: string): string | null {
   try {
-    return fs.readFileSync(tokenFilePath || DEFAULT_TOKEN_PATH, 'utf-8').trim() || null;
+    return fs.readFileSync(file, 'utf-8').trim() || null;
   } catch {
     return null;
   }
+}
+
+/** The `tool` claim of an IDE token (read-only decode; Tower verifies it). */
+function tokenTool(token: string): string | null {
+  try {
+    const json = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf-8'));
+    return typeof json?.tool === 'string' ? json.tool : null;
+  } catch {
+    return null;
+  }
+}
+
+export function getToken(tokenFilePath?: string): string | null {
+  if (tokenFilePath) return readToken(tokenFilePath);
+  const own = readToken(DEFAULT_TOKEN_PATH);
+  if (own) return own;
+  // Until the extension has moved it: the shared file, only when its token was
+  // issued to this editor. Another editor's token is never sent from here.
+  const legacy = readToken(LEGACY_TOKEN_PATH);
+  return legacy && tokenTool(legacy) === TOOL ? legacy : null;
 }
 
 export function hasToken(): boolean {

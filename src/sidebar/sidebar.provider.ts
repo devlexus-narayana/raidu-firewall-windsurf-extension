@@ -56,9 +56,20 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             break;
           case 'refresh':
           case 'ready':
+            // "Connected" must mean Tower still honours the pairing, not just
+            // that a token is stored here (RAI-4807).
+            await authService.verifySessionSoon();
             this.refresh();
             break;
         }
+      },
+      undefined,
+      this._context.subscriptions,
+    );
+
+    webviewView.onDidChangeVisibility(
+      () => {
+        if (webviewView.visible) void authService.verifySessionSoon();
       },
       undefined,
       this._context.subscriptions,

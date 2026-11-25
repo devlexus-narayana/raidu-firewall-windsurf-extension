@@ -3,18 +3,19 @@
  *
  * Security:
  * - IDE token stored in SecretStorage (OS keychain) for the extension
- * - Token also written to ~/.raidu/token (0600 perms) for hooks to read
+ * - Token also written to ~/.raidu/<tool>/token (0600 perms) for hooks to read;
+ *   one file per editor, so Cursor and Windsurf never overwrite or adopt each
+ *   other's token (see token-store.ts)
  * - Token NEVER stored in settings.json (plaintext, world-readable)
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { isForeignToken, isOwnToken, LEGACY_TOKEN_FILE, PENDING_STATE_FILE, TOKEN_FILE, TOOL_DIR } from './token-store';
+
+export { TOKEN_FILE } from './token-store';
 
 const SECTION = 'raidu';
-export const TOKEN_FILE = path.join(os.homedir(), '.raidu', 'token');
-const PENDING_STATE_FILE = path.join(os.homedir(), '.raidu', 'login-state');
 const PENDING_STATE_TTL_MS = 15 * 60 * 1000;
 
 let _secrets: vscode.SecretStorage | undefined;
@@ -37,14 +38,15 @@ export function getApiBase(): string {
 export async function getToken(): Promise<string | undefined> {
   if (_secrets) {
     const secret = await _secrets.get('ideToken');
-    if (secret) return secret;
+    if (secret && isForeignToken(secret)) {
+      // Adopted from another editor through the old shared token file. It is
+      // that editor's pairing: drop it here, and never revoke with it.
+      await _secrets.delete('ideToken');
+    } else if (secret) {
+      return secret;
+    }
   }
-  // Fallback: read from token file (for migration)
-  try {
-    return fs.readFileSync(TOKEN_FILE, 'utf-8').trim() || undefined;
-  } catch {
-    return undefined;
-  }
+  return readTokenFile();
 }
 
 export function getWorkspaceId(): string | undefined {
@@ -69,11 +71,7 @@ export async function setToken(token: string): Promise<void> {
 
   // Secondary: token file with restricted perms for hooks to read
   // Hooks run as standalone Node.js and can't access SecretStorage
-  try {
-    const dir = path.dirname(TOKEN_FILE);
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(TOKEN_FILE, token, { mode: 0o600 });
-  } catch {}
+  writeTokenFile(token);
 
   // Remove any legacy token from settings.json
   await cfg().update('ideToken', undefined, vscode.ConfigurationTarget.Global);
@@ -87,12 +85,47 @@ export async function setEnvironmentId(id: string): Promise<void> {
   await cfg().update('environmentId', id, vscode.ConfigurationTarget.Global);
 }
 
-/** Reads the token straight from ~/.raidu/token (shared by every editor window). */
-export function readTokenFile(): string | undefined {
+function writeTokenFile(token: string): void {
   try {
-    return fs.readFileSync(TOKEN_FILE, 'utf-8').trim() || undefined;
+    fs.mkdirSync(TOOL_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(TOKEN_FILE, token, { mode: 0o600 });
+  } catch {}
+}
+
+function readFileToken(file: string): string | undefined {
+  try {
+    return fs.readFileSync(file, 'utf-8').trim() || undefined;
   } catch {
     return undefined;
+  }
+}
+
+/** Reads this editor's token file, shared by its windows (never by another editor). */
+export function readTokenFile(): string | undefined {
+  const token = readFileToken(TOKEN_FILE);
+  return token && !isForeignToken(token) ? token : undefined;
+}
+
+/**
+ * Move this editor's token off the shared ~/.raidu/token, once, at activation.
+ *
+ * The hooks read only ~/.raidu/<tool>/token now, so it is written from
+ * SecretStorage (or from the shared file, when that token says it is ours).
+ * The shared file is removed only when it holds this editor's token; another
+ * editor's token stays for that editor, which may not have updated yet.
+ */
+export async function migrateTokenStorage(): Promise<void> {
+  const legacy = readFileToken(LEGACY_TOKEN_FILE);
+  const current = await getToken();
+  if (!current && legacy && isOwnToken(legacy)) {
+    await setToken(legacy);
+  } else if (current && !readFileToken(TOKEN_FILE)) {
+    writeTokenFile(current);
+  }
+  if (legacy && (isOwnToken(legacy) || legacy === current)) {
+    try {
+      fs.unlinkSync(LEGACY_TOKEN_FILE);
+    } catch {}
   }
 }
 
@@ -110,7 +143,7 @@ export async function adoptToken(token: string): Promise<void> {
 
 export function savePendingState(state: string): void {
   try {
-    fs.mkdirSync(path.dirname(PENDING_STATE_FILE), { recursive: true, mode: 0o700 });
+    fs.mkdirSync(TOOL_DIR, { recursive: true, mode: 0o700 });
     fs.writeFileSync(PENDING_STATE_FILE, JSON.stringify({ state, createdAt: Date.now() }), { mode: 0o600 });
   } catch {}
 }
@@ -134,7 +167,7 @@ export async function clearAll(): Promise<void> {
   if (_secrets) {
     await _secrets.delete('ideToken');
   }
-  // Delete token file
+  // Delete this editor's token file (never another editor's)
   try {
     fs.unlinkSync(TOKEN_FILE);
   } catch {}

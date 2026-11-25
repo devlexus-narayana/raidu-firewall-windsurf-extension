@@ -16,7 +16,7 @@ import * as fs from 'node:fs';
 import * as vscode from 'vscode';
 import * as authService from './auth/auth.service';
 import { LOG_DIR } from './config/constants';
-import { initSecretStorage } from './config/settings';
+import { initSecretStorage, migrateTokenStorage } from './config/settings';
 import { cleanup } from './services/cleanup';
 import { installHooks, removeHooks } from './services/hooks-installer';
 import { getStats } from './services/log-reader';
@@ -28,8 +28,9 @@ let logWatcher: LogWatcher | undefined;
 let refreshInterval: ReturnType<typeof setInterval> | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-  // --- 0. Init secret storage ---
+  // --- 0. Init secret storage, and move the token off the shared ~/.raidu/token ---
   initSecretStorage(context.secrets);
+  const migrated = migrateTokenStorage().catch(() => {});
 
   // --- 1. Ensure log directory exists ---
   try {
@@ -142,10 +143,20 @@ export function activate(context: vscode.ExtensionContext): void {
   logWatcher.start();
 
   // --- 8. Restore session if previously connected ---
-  authService.restoreSession().then(() => {
-    sidebarProvider.refresh();
-    refreshStatusBar(statusBar);
-  });
+  migrated
+    .then(() => authService.restoreSession())
+    .then(() => {
+      sidebarProvider.refresh();
+      refreshStatusBar(statusBar);
+    });
+
+  // Coming back to the editor re-checks the pairing with Tower, so one revoked
+  // elsewhere stops reading "Connected" here (throttled in verifySessionSoon).
+  context.subscriptions.push(
+    vscode.window.onDidChangeWindowState((state) => {
+      if (state.focused) void authService.verifySessionSoon();
+    }),
+  );
 
   // --- 9. Periodic status bar refresh (every 3 seconds) ---
   refreshInterval = setInterval(() => {

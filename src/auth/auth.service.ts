@@ -13,6 +13,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as vscode from 'vscode';
 import * as settings from '../config/settings';
+import { TOOL } from '../config/token-store';
 import { revokeOnServer, revokeTokenSession } from './revoke';
 
 // ---------------------------------------------------------------------------
@@ -135,7 +136,7 @@ export async function handleCallback(uri: vscode.Uri): Promise<void> {
   // A new login replaces the old token: revoke its session so it does not stay
   // live on Tower (and counted as connected) after this editor stops using it.
   const previous = await settings.getToken();
-  if (previous && previous !== token) await revokeTokenSession(settings.getApiBase(), previous);
+  if (previous && previous !== token) await revokeTokenSession(settings.getApiBase(), previous, TOOL);
 
   console.log('[Raidu] Saving token...');
   await settings.setToken(token);
@@ -168,9 +169,7 @@ export async function loadConfig(token: string): Promise<void> {
     console.log('[Raidu] loadConfig status:', res.status);
 
     if (res.status === 401) {
-      await settings.clearAll();
-      _profile = undefined;
-      vscode.window.showWarningMessage('Raidu: Session expired. Please reconnect.');
+      await disconnectedOnTower();
       return;
     }
 
@@ -220,6 +219,50 @@ export async function loadConfig(token: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Is the pairing still live on Tower?
+// ---------------------------------------------------------------------------
+
+/**
+ * The local token says nothing about whether Tower still honours it: a pairing
+ * revoked on Tower (from the console, or by another editor before RAI-4807)
+ * kept reading "Connected" here while every hook call was refused. Ask Tower,
+ * and show disconnected when it says the token is no longer valid. Offline or
+ * a server fault leaves the state alone. Tower does not count this as use.
+ */
+export async function verifySession(): Promise<void> {
+  const token = await settings.getToken();
+  if (!token) return;
+  try {
+    const res = await fetch(`${settings.getApiBase()}/api/auth/ide/config`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401) await disconnectedOnTower();
+  } catch {
+    // Offline: keep the local state; the next check decides.
+  }
+}
+
+const VERIFY_INTERVAL_MS = 60_000;
+let _lastVerifiedAt = 0;
+
+/** verifySession, at most once a minute: for focus and sidebar-visibility events. */
+export async function verifySessionSoon(): Promise<void> {
+  const now = Date.now();
+  if (now - _lastVerifiedAt < VERIFY_INTERVAL_MS) return;
+  _lastVerifiedAt = now;
+  await verifySession();
+}
+
+async function disconnectedOnTower(): Promise<void> {
+  await settings.clearAll();
+  _profile = undefined;
+  vscode.window.showWarningMessage(
+    'Raidu: This editor is no longer connected to Tower (pairing revoked or expired). Please reconnect.',
+  );
+  vscode.commands.executeCommand('raidu.refreshUI');
+}
+
+// ---------------------------------------------------------------------------
 // Logout
 // ---------------------------------------------------------------------------
 
@@ -227,7 +270,7 @@ export async function logout(): Promise<void> {
   // Revoke on Tower too: clearing the local token alone left the pairing live
   // there, still counted as connected in Tower's Tool connections view.
   const token = await settings.getToken();
-  if (token) await revokeOnServer(settings.getApiBase(), token, 'windsurf');
+  if (token) await revokeOnServer(settings.getApiBase(), token, TOOL);
   await settings.clearAll();
   _profile = undefined;
   vscode.window.showInformationMessage('Raidu Firewall: Disconnected.');
