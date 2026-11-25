@@ -23,17 +23,16 @@
 
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { hasToken, postBlockReports } from './api';
 import { createLogger } from './audit';
+import { LOG_DIR } from './paths';
 import type { BlockDetector, BlockReport } from './types';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const LOG_DIR = path.join(os.homedir(), '.raidu', 'logs');
 export const REPORT_QUEUE = path.join(LOG_DIR, 'report-queue.jsonl');
 const SENDING_SUFFIX = '.sending';
 const MAX_QUEUE_ENTRIES = 500;

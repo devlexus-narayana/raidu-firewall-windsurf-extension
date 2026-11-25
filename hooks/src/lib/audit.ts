@@ -4,11 +4,12 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
+import { LOG_DIR } from './paths';
 import type { AuditEntry, Stats } from './types';
 
-const DEFAULT_LOG_DIR = path.join(os.homedir(), '.raidu', 'logs');
+// Windsurf's own log directory (~/.raidu/windsurf/logs), never shared with another editor.
+const DEFAULT_LOG_DIR = LOG_DIR;
 const DEFAULT_STATS: Stats = { totalScans: 0, piiFound: 0, secretsFound: 0, promptsBlocked: 0, commandsBlocked: 0, sessionsAudited: 0 };
 
 export function createLogger(logDir?: string) {

@@ -16,7 +16,7 @@ import * as fs from 'node:fs';
 import * as vscode from 'vscode';
 import * as authService from './auth/auth.service';
 import { LOG_DIR } from './config/constants';
-import { initSecretStorage, migrateTokenStorage } from './config/settings';
+import { initSecretStorage, migrateTokenStorage, writeTowerFile } from './config/settings';
 import { cleanup } from './services/cleanup';
 import { installHooks, removeHooks } from './services/hooks-installer';
 import { getStats } from './services/log-reader';
@@ -149,6 +149,13 @@ export function activate(context: vscode.ExtensionContext): void {
       sidebarProvider.refresh();
       refreshStatusBar(statusBar);
     });
+
+  // The hooks read the Tower from a file; keep it in step with the setting.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('raidu.apiBase')) writeTowerFile();
+    }),
+  );
 
   // Coming back to the editor re-checks the pairing with Tower, so one revoked
   // elsewhere stops reading "Connected" here (throttled in verifySessionSoon).

@@ -16,11 +16,10 @@
 
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { createLogger } from './audit';
+import { LOG_DIR } from './paths';
 
-const LOG_DIR = path.join(os.homedir(), '.raidu', 'logs');
 const { debug } = createLogger(LOG_DIR);
 
 const STORE_FILE = path.join(LOG_DIR, 'blocked-values.json');

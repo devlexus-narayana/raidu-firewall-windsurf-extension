@@ -2,11 +2,11 @@
  * Shared constants for the Raidu Firewall extension host.
  */
 
-import * as os from 'node:os';
 import * as path from 'node:path';
+import { LOG_DIR } from './token-store';
 
-/** Directory where the hook process writes audit logs and stats. */
-export const LOG_DIR = path.join(os.homedir(), '.raidu', 'logs');
+/** Directory where the hook process writes audit logs and stats: this editor's own (RAI-4807). */
+export { LOG_DIR };
 
 /** JSONL audit log written by hooks. */
 export const AUDIT_LOG = path.join(LOG_DIR, 'audit.jsonl');

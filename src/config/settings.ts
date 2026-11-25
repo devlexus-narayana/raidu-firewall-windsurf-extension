@@ -11,7 +11,15 @@
 
 import * as fs from 'node:fs';
 import * as vscode from 'vscode';
-import { isForeignToken, isOwnToken, LEGACY_TOKEN_FILE, PENDING_STATE_FILE, TOKEN_FILE, TOOL_DIR } from './token-store';
+import {
+  isForeignToken,
+  isOwnToken,
+  LEGACY_TOKEN_FILE,
+  PENDING_STATE_FILE,
+  TOKEN_FILE,
+  TOOL_DIR,
+  TOWER_FILE,
+} from './token-store';
 
 export { TOKEN_FILE } from './token-store';
 
@@ -72,6 +80,7 @@ export async function setToken(token: string): Promise<void> {
   // Secondary: token file with restricted perms for hooks to read
   // Hooks run as standalone Node.js and can't access SecretStorage
   writeTokenFile(token);
+  writeTowerFile();
 
   // Remove any legacy token from settings.json
   await cfg().update('ideToken', undefined, vscode.ConfigurationTarget.Global);
@@ -89,6 +98,18 @@ function writeTokenFile(token: string): void {
   try {
     fs.mkdirSync(TOOL_DIR, { recursive: true, mode: 0o700 });
     fs.writeFileSync(TOKEN_FILE, token, { mode: 0o600 });
+  } catch {}
+}
+
+/**
+ * Tell the hooks which Tower this editor is connected to. They run as plain
+ * Node and cannot read raidu.apiBase, and without this sent every scan to
+ * their built-in default Tower, whatever the extension was paired with.
+ */
+export function writeTowerFile(): void {
+  try {
+    fs.mkdirSync(TOOL_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(TOWER_FILE, getApiBase(), { mode: 0o600 });
   } catch {}
 }
 
@@ -115,6 +136,7 @@ export function readTokenFile(): string | undefined {
  * editor's token stays for that editor, which may not have updated yet.
  */
 export async function migrateTokenStorage(): Promise<void> {
+  writeTowerFile();
   const legacy = readFileToken(LEGACY_TOKEN_FILE);
   const current = await getToken();
   if (!current && legacy && isOwnToken(legacy)) {

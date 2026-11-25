@@ -17,11 +17,15 @@ import * as path from 'node:path';
 export const TOOL = 'windsurf';
 
 export const RAIDU_HOME = path.join(os.homedir(), '.raidu');
-/** This editor's own directory: its token and its pending-login state. */
+/** This editor's own directory: token, pending-login state, Tower URL and logs. */
 export const TOOL_DIR = path.join(RAIDU_HOME, TOOL);
-/** Read by this editor's hooks (hooks/src/lib/api.ts resolves the same path). */
+/** Read by this editor's hooks (hooks/src/lib/paths.ts resolves the same path). */
 export const TOKEN_FILE = path.join(TOOL_DIR, 'token');
 export const PENDING_STATE_FILE = path.join(TOOL_DIR, 'login-state');
+/** The Tower this editor is connected to (raidu.apiBase), for the hooks, which cannot read settings. */
+export const TOWER_FILE = path.join(TOOL_DIR, 'tower');
+/** This editor's hook logs, stats and caches; the hooks write the same path (hooks/src/lib/paths.ts). */
+export const LOG_DIR = path.join(TOOL_DIR, 'logs');
 /** Shared by every editor before per-tool files. Read only to migrate this editor's own token. */
 export const LEGACY_TOKEN_FILE = path.join(RAIDU_HOME, 'token');
 
