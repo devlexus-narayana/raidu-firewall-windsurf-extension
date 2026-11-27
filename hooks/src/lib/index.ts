@@ -5,7 +5,7 @@ export { validateViaAPI, getToken } from './api';
 export type { APIClientConfig } from './api';
 export { scanText, scanTextLocal, scanTextWithFiles, scanFileContent, formatEntities, redactText, copyToClipboard, entitySummary, MAX_SCAN_SIZE } from './redaction';
 export type { FileScanResult, ScanFile } from './redaction';
-export { blockedConversation, findBlockedValues, markConversationBlocked, matchBlockedValues, rememberBlockedValues, rememberSecretsIn } from './blocked-values';
+export { blockedConversation, findBlockedValues, markConversationBlocked, rememberBlockedValues, rememberSecretsIn } from './blocked-values';
 export { inspectFile } from './inspect';
 export { readTextForScan } from './content';
 export { scanResponseInBackground } from './response-scan';
