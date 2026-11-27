@@ -3,9 +3,9 @@
  * Scans prompt for PII via API + local fallback.
  */
 
-import { scanText, scanTextLocal, formatEntities, redactText, copyToClipboard, entitySummary, createLogger, reportBlock, reportScanBlockIfUnrecorded, findBlockedValues, rememberBlockedValues, blockedConversation, markConversationBlocked, WINDSURF_EVENT } from '../lib';
+import { scanText, scanTextLocal, formatEntities, redactText, copyToClipboard, entitySummary, createLogger, reportBlock, reportScanBlockIfUnrecorded, matchBlockedValues, rememberBlockedValues, blockedConversation, markConversationBlocked, WINDSURF_EVENT } from '../lib';
 
-const NEW_CHAT_HINT = 'Start a new conversation: this one now holds the blocked message, and further prompts here are blocked.';
+const NEW_CHAT_HINT = 'Edit that message to take the sensitive data out, or start a new conversation: until then further prompts in this one are blocked.';
 import type { WindsurfHookEvent } from '../types';
 
 const logger = createLogger();
@@ -14,17 +14,26 @@ export function handlePreUserPrompt(event: WindsurfHookEvent): { block: boolean;
   const prompt = event.tool_info?.user_prompt || '';
   if (!prompt) return { block: false };
 
+  // TEMP RAI-4807 probe: which fields Windsurf sends with a prompt (names only).
+  logger.debug(`pre_user_prompt payload keys: ${Object.keys(event).sort().join(',')} tool_info: ${Object.keys(event.tool_info ?? {}).sort().join(',')}`);
+
   // Windsurf keeps a blocked prompt in the trajectory and sends it as history
   // with every later prompt, so the model still sees the blocked data. A hook
-  // cannot edit that history: block the conversation until a new one.
-  const heldTypes = blockedConversation(event.trajectory_id);
+  // cannot edit that history: block the conversation while the blocked message
+  // is still in it (read from the transcript when Windsurf gives one).
+  const held = blockedConversation(event.trajectory_id, event.tool_info?.transcript_path);
+  if (held.check) logger.debug(`conversation held check: ${held.check}`);
+  if (held.check === 'cleared') {
+    logger.audit({ event: 'pre_user_prompt', action: 'unblocked', reason: 'blocked_message_removed', trajectoryId: event.trajectory_id });
+  }
+  const heldTypes = held.types;
   if (heldTypes) {
     logger.incStat('promptsBlocked');
     // Not sent anywhere, but remember what it carries so the values stay blocked.
     rememberBlockedValues(scanTextLocal(prompt).entities);
-    logger.audit({ event: 'pre_user_prompt', action: 'blocked', reason: 'conversation_holds_blocked_prompt', trajectoryId: event.trajectory_id });
+    logger.audit({ event: 'pre_user_prompt', action: 'blocked', reason: 'conversation_holds_blocked_prompt', check: held.check, trajectoryId: event.trajectory_id });
     reportBlock(event, { event: WINDSURF_EVENT.pre_user_prompt, kind: 'sensitive_data', detector: 'local', entityTypes: heldTypes, rule: 'conversation_holds_blocked_prompt' });
-    return { block: true, message: 'Raidu Firewall: This conversation still contains a message Raidu Firewall blocked, and it would be sent to the model again with this prompt. Start a new conversation to continue.' };
+    return { block: true, message: 'Raidu Firewall: This conversation still contains a message Raidu Firewall blocked, and it would be sent to the model again with this prompt. Edit that message to take the sensitive data out, or start a new conversation.' };
   }
 
   logger.incStat('totalScans');
@@ -35,7 +44,7 @@ export function handlePreUserPrompt(event: WindsurfHookEvent): { block: boolean;
     logger.incStat('promptsBlocked');
     // Remembered so the agent cannot reuse them later in the trajectory (RAI-4807 #7).
     rememberBlockedValues(result.entities);
-    markConversationBlocked(event.trajectory_id, result.entities.map((e) => e.type));
+    markConversationBlocked(event.trajectory_id, result.entities.map((e) => e.type), result.entities.map((e) => e.value));
 
     const safeVersion = result.sanitizedInput || redactText(prompt, result.entities);
     if (safeVersion !== prompt) copyToClipboard(safeVersion, logger.debug);
@@ -57,10 +66,11 @@ export function handlePreUserPrompt(event: WindsurfHookEvent): { block: boolean;
   }
 
   // A value blocked earlier must not come back in a later prompt either.
-  const reused = findBlockedValues(prompt);
+  const matched = matchBlockedValues(prompt);
+  const reused = [...new Set(matched.map((m) => m.type))];
   if (reused.length > 0) {
     logger.incStat('promptsBlocked');
-    markConversationBlocked(event.trajectory_id, reused);
+    markConversationBlocked(event.trajectory_id, reused, matched.map((m) => m.value));
     logger.audit({ event: 'pre_user_prompt', action: 'blocked', reason: 'previously_blocked_value', entities: reused.map((type) => ({ type, score: 1 })), trajectoryId: event.trajectory_id });
     reportBlock(event, { event: WINDSURF_EVENT.pre_user_prompt, kind: 'sensitive_data', detector: 'local', entityTypes: reused, rule: 'previously_blocked_value' });
     return { block: true, message: `Raidu Firewall: This prompt contains a value Raidu Firewall blocked earlier (${reused.join(', ')}). ${NEW_CHAT_HINT}` };
